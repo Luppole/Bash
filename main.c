@@ -379,6 +379,7 @@ void cat_file(const char *filename) {
 
     if (file == NULL) {
         perror("Error opening file");
+        fprintf(stderr, "File: %s\n", filename);
         exit(EXIT_FAILURE);
     }
 
@@ -387,7 +388,97 @@ void cat_file(const char *filename) {
         putchar(c);
     }
 
+    if (ferror(file)) {
+        perror("Error reading file");
+        fprintf(stderr, "File: %s\n", filename);
+        fclose(file);
+        exit(EXIT_FAILURE);
+    }
+
     fclose(file);
+}
+
+char* readEntireFile(const char* filename) {
+    FILE* file = fopen(filename, "rb");
+
+    if (file == NULL) {
+        perror("Error opening file");
+        return NULL;
+    }
+
+    // Determine the file size
+    fseek(file, 0, SEEK_END);
+    long file_size = ftell(file);
+    fseek(file, 0, SEEK_SET);
+
+    // Allocate memory for the entire file content
+    char* file_content = (char*)malloc(file_size + 1); // +1 for null terminator
+
+    if (file_content == NULL) {
+        perror("Memory allocation error");
+        fclose(file);
+        return NULL;
+    }
+
+    // Read the entire content into the variable
+    size_t read_size = fread(file_content, 1, file_size, file);
+
+    if (read_size != (size_t)file_size) {
+        perror("Error reading file");
+        free(file_content);
+        fclose(file);
+        return NULL;
+    }
+
+    // Null-terminate the string
+    file_content[file_size] = '\0';
+
+    // Close the file
+    fclose(file);
+
+    return file_content;
+}
+
+void printLinesWithPattern(const char* content, const char* pattern) {
+    char* line = strtok(content, "\n");
+
+    while (line != NULL) {
+        if (strstr(line, pattern) != NULL) {
+            printf("%s\n", line);
+        }
+        line = strtok(NULL, "\n");
+    }
+}
+void cat_grep_parse(const char* command, char** input, char** pattern) {
+    // Find the position of the pipe symbol '|'
+    const char* pipeSymbol = strchr(command, '|');
+
+    if (pipeSymbol != NULL) {
+        // Extract the command before the pipe (input command)
+        *input = strndup(command, pipeSymbol - command);
+        // Extract the command after the pipe (pattern)
+        *pattern = strdup(pipeSymbol + 1);
+
+        // Check if memory allocation was successful
+        if (*input == NULL || *pattern == NULL) {
+            perror("Memory allocation error");
+            exit(EXIT_FAILURE);
+        }
+
+        // Trim leading and trailing spaces from the input and pattern
+        char* end;
+        while (*input && (end = strchr("\n \t", (*input)[strlen(*input) - 1])) != NULL) {
+            *end = '\0';
+        }
+
+        while (*pattern && (end = strchr("\n \t", (*pattern)[0])) != NULL) {
+            *pattern = *pattern + 1;
+        }
+    } else {
+        // If no pipe is found, set both input and pattern to NULL
+        *input = NULL;
+        *pattern = NULL;
+    }
 }
 
 int main() {
@@ -416,12 +507,63 @@ int main() {
 
         } 
 
-        else if(strstr(input, "echo") != NULL) {
+        if (strstr(input, "echo") != NULL) 
+        {
             char text[MAX_LINE];
             strcpy(text, splice_string(input, 5));
-            printf("%s\n", text);
 
+            // Check for the presence of a pipe '|'
+            char* pipeSymbol = strchr(text, '|');
+            if (pipeSymbol != NULL) {
+                // Extract the command after 'echo' (excluding the '|')
+                *pipeSymbol = '\0';
+                char* echoText = splice_string(text, 0);
+
+                // Create a pipe
+                int pipe_fd[2];
+                if (pipe(pipe_fd) == -1) {
+                    perror("pipe");
+                    return 1;
+                }
+
+                pid_t child_pid = fork();
+
+                if (child_pid == -1) {
+                    perror("fork");
+                    return 1;
+                }
+
+                if (child_pid == 0) {
+                    // Child process (write to the pipe)
+                    close(pipe_fd[0]);  // Close the unused read end
+                    dup2(pipe_fd[1], STDOUT_FILENO);  // Redirect stdout to the write end of the pipe
+                    execlp("echo", "echo", echoText, NULL);
+                    perror("execlp");
+                    return 1;
+                } else {
+                    // Parent process (read from the pipe)
+                    close(pipe_fd[1]);  // Close the unused write end
+                    wait(NULL);
+
+                    // Read the result from the pipe
+                    char result[MAX_LINE];
+                    ssize_t bytesRead = read(pipe_fd[0], result, sizeof(result) - 1);
+                    if (bytesRead > 0) {
+                        result[bytesRead] = '\0';
+                        printf("%s", result);
+                    }
+
+                    close(pipe_fd[0]);  // Close the read end of the pipe
+                }
+            } 
+            
+            else 
+            {
+                // No pipe, just print the echo text
+                printf("%s\n", text);
+            }
         }
+    
         
         else if (strcmp(input, "history") == 0) {
             int i;
@@ -498,22 +640,28 @@ int main() {
                 }
         }
 
-        else if(strstr(input, "touch") != NULL)
-        {
-            push(&history, input);
-            char file_name[MAX_LINE];
-            strcpy(file_name, splice_string(input, 6));
-            touch_file(file_name);
-        }
-
-        else if(strstr(input, "cat") != NULL)
-        {
+        else if (strstr(input, "cat") != NULL) {
             push(&history, input);
             char file_name[MAX_LINE];
             strcpy(file_name, splice_string(input, 4));
-            cat_file(file_name);
-        }
 
+            if (strstr(input, "| grep") != NULL) {
+                char file_content[MAX_LINE];
+                char pattern[MAX_LINE];
+                
+                strcpy(file_content, readEntireFile(file_name));
+                strcpy(pattern, splice_string(input, 12+strlen(file_name)));
+
+                printf("%s", file_content);
+                printf("%s", file_content);
+
+                printLinesWithPattern(file_content, pattern);
+            } 
+            
+            else {
+                cat_file(file_name);
+            }
+        }
         else if(strcmp(input, "exit")) {
 
             exit(0);
